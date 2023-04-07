@@ -1,0 +1,567 @@
+---
+title: "stor538_proj2"
+author: "Casey Dulaney"
+date: "2023-03-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(rvest)
+library(lubridate)
+library(hms)
+library(nbastatR)
+library(xgboost)
+library(purrr)
+library(Metrics)
+```
+
+
+## Read in Files
+```{r}
+games <- read_csv(url("https://github.com/SuperMarioGiacomazzo/STOR538_WEBSITE/raw/master/Playoffs/Round%202/Starting%20Data/games.csv"))
+games_details <- read_csv(url("https://github.com/SuperMarioGiacomazzo/STOR538_WEBSITE/raw/master/Playoffs/Round%202/Starting%20Data/games_details.csv"))
+players <- read_csv(url("https://github.com/SuperMarioGiacomazzo/STOR538_WEBSITE/raw/master/Playoffs/Round%202/Starting%20Data/players.csv"))
+ranking <- read_csv(url("https://github.com/SuperMarioGiacomazzo/STOR538_WEBSITE/raw/master/Playoffs/Round%202/Starting%20Data/ranking.csv"))
+teams <- read_csv(url("https://github.com/SuperMarioGiacomazzo/STOR538_WEBSITE/raw/master/Playoffs/Round%202/Starting%20Data/teams.csv"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Fixing Variable Type
+```{r}
+
+
+games =
+games %>%
+ mutate(
+  spread = PTS_home - PTS_away,
+  total = PTS_home + PTS_away,
+  OREB = REB_home + REB_away)
+
+
+games.grouped =
+  games_details %>%
+  group_by(GAME_ID, TEAM_ID) # grouping data by Game ID and Team ID so that we can analyze each separate team
+
+
+
+# changing NAs in numeric variables to 0
+games.grouped$FGM[is.na(games.grouped$FGM)] = 0
+games.grouped$FGA[is.na(games.grouped$FGA)] = 0
+games.grouped$FG_PCT[is.na(games.grouped$FG_PCT)] = 0
+games.grouped$FG3M[is.na(games.grouped$FG3M)] = 0
+games.grouped$FG3A[is.na(games.grouped$FG3A)] = 0
+games.grouped$FG3_PCT[is.na(games.grouped$FG3_PCT)] = 0
+games.grouped$FTM[is.na(games.grouped$FTM)] = 0
+games.grouped$FTA[is.na(games.grouped$FTA)] = 0
+games.grouped$FT_PCT[is.na(games.grouped$FT_PCT)] = 0
+games.grouped$OREB[is.na(games.grouped$OREB)] = 0
+games.grouped$DREB[is.na(games.grouped$DREB)] = 0
+games.grouped$REB[is.na(games.grouped$REB)] = 0
+games.grouped$AST[is.na(games.grouped$AST)] = 0
+games.grouped$STL[is.na(games.grouped$STL)] = 0
+games.grouped$BLK[is.na(games.grouped$BLK)] = 0
+games.grouped$TO[is.na(games.grouped$TO)] = 0
+games.grouped$PF[is.na(games.grouped$PF)] = 0
+games.grouped$PTS[is.na(games.grouped$PTS)] = 0
+games.grouped$PLUS_MINUS[is.na(games.grouped$PLUS_MINUS)] = 0
+
+```
+
+
+# fixing MIN variable
+```{r}
+games.grouped$MIN <- gsub(":", ".", games.grouped$MIN) # takes out colon of the Minutes variable; important for cleaning
+
+games.grouped <- games.grouped %>%           # Create duplicate of column with new name
+  mutate(SEC = MIN) 
+
+
+# if the length of digits in MIN == 1, add a leading zero
+
+
+
+# creating new "Minutes Played" variable that lets us express the minutes played variable as a numerical quantity
+games.grouped$MIN = gsub('.{3}$', '', games.grouped$MIN)
+games.grouped$SEC <- gsub("^.{0,2}", "", games.grouped$SEC)
+
+games.grouped$MIN[is.na(games.grouped$MIN)] <- 0
+games.grouped$SEC[is.na(games.grouped$SEC)] <- 0
+
+games.grouped$MIN = as.numeric(games.grouped$MIN)
+games.grouped$SEC = as.numeric(games.grouped$SEC)
+x <- games.grouped$MIN
+games.grouped$MIN = 
+  ifelse (nchar(x)==1, paste0("0", x), x)
+
+games.grouped$SEC = ((games.grouped$SEC) / 60) * 100
+games.grouped$SEC <- gsub("^.{0,1}", "", games.grouped$SEC)
+games.grouped$MinutesPlayed = paste0(games.grouped$MIN, games.grouped$SEC)
+
+head(games.grouped)
+
+
+
+
+
+```
+
+
+
+
+
+# finalizing games grouped
+```{r}
+
+games.grouped = games.grouped  %>%
+    group_by(GAME_ID, TEAM_ID) %>%
+    mutate(rank = rank(desc(MinutesPlayed)))
+  
+
+
+  
+head(games.grouped)
+
+```
+
+
+
+
+# Splitting Rebounds homes and away
+```{r}
+
+grouped.oreb <- summarize(games.grouped, sum(OREB))
+grouped.dreb <- summarize(games.grouped, sum(DREB), sum(BLK), sum(TO), sum(PTS), sum(PF), sum(PTS), sum(AST), sum(REB), sum(FTA), sum(FTM), sum(FG3A), sum(FG3M), sum(FGM), sum(FGA))
+grouped.oreb = grouped.oreb %>% 
+  mutate(merging.id = paste(GAME_ID,TEAM_ID))
+
+grouped.dreb = grouped.dreb %>% 
+  mutate(merging.id = paste(GAME_ID,TEAM_ID))
+
+```
+  
+  
+# splitting games dataframe into home and away
+```{r}
+games.away = games
+games.home = games
+
+games.away = 
+  games.away %>%
+  select(GAME_DATE_EST, GAME_ID, TEAM_ID = VISITOR_TEAM_ID, SEASON, PTS = PTS_away, FG_PCT = FG_PCT_away, FG3_PCT = FG3_PCT_away, AST = AST_away, TOTAL_REB = REB_away)
+
+games.home =
+  games.home %>%
+  select(GAME_DATE_EST, GAME_ID, TEAM_ID = HOME_TEAM_ID, SEASON, PTS = PTS_home, FG_PCT = FG_PCT_home, FG3_PCT = FG3_PCT_home, AST = AST_home, TOTAL_REB = REB_home)
+
+games.all = rbind(games.home,games.away)
+```
+
+
+# merging rebounds into games
+```{r}
+
+games.all = games.all %>%
+  mutate(merging.id=paste(GAME_ID, TEAM_ID))
+
+games.all = na.omit(games.all)
+games.all = games.all[!duplicated(games.all$merging.id), ]
+
+
+all.rebounds = merge(grouped.oreb, grouped.dreb, by="merging.id")
+all.rebounds = na.omit(all.rebounds)
+all.rebounds = all.rebounds[!duplicated(all.rebounds$merging.id), ]
+
+
+#games.rebounds.added <- merge(games.all, grouped.oreb, by="merging.id")
+#games.rebounds.added <- merge(games.rebounds.added, grouped.dreb, by="merging.id")
+#head(games.rebounds.added)
+  
+```
+
+
+
+# final data frame: split by team and game
+```{r}
+games.split = merge(games.all, all.rebounds, by="merging.id")
+
+
+games.split = games.split %>%
+  transmute(merging.id = merging.id, DATE = GAME_DATE_EST, GAME_ID = GAME_ID.x, TEAM_ID = TEAM_ID.x, OREB =`sum(OREB)`, DREB = `sum(DREB)`, BLK = `sum(BLK)`, TO = `sum(TO)`, PTS = `sum(PTS)`, PF = `sum(PF)`, AST = `sum(AST)`, TOTAL_REB = `sum(REB)`, FTA = `sum(FTA)`, FTM = `sum(FTM)`, FG3M = `sum(FG3M)`, FG3A = `sum(FG3A)`, FGM = `sum(FGM)`, FGA = `sum(FGA)`, FG_PCT = FG_PCT, FG3_PCT = FG3_PCT)
+
+# NOTE: this data frame has each row as a separate grouping (each row is a separate team that played in the game. For example, if the Hornets played the Kings, both teams are their own row)
+```
+
+
+## merging games split with team name
+```{r}
+games.split = merge(games.split, teams, by="TEAM_ID")
+
+games.split = games.split %>%
+  transmute(merging.id, DATE, GAME_ID, TEAM_ID, OREB, DREB, BLK, TO, PTS, PF, AST, TOTAL_REB, FTA, FTM, FG3M, FG3A, FGM, FGA, FG_PCT, FG3_PCT, TEAM_NAME = paste0(CITY," ", NICKNAME))
+```
+
+
+
+# final data frame: split by only game
+```{r}
+total.per.game = games.split %>%
+ group_by(GAME_ID) %>%
+summarize(sum(OREB), sum(DREB), sum(BLK), sum(TO), sum(PTS), sum(PF), sum(AST), sum(TOTAL_REB), sum(FTA), sum(FTM), sum(FG3M), sum(FG3A), sum(FGM), sum(FGA)) %>%
+transmute(GAME_ID, OREB =`sum(OREB)`, DREB = `sum(DREB)`, BLK = `sum(BLK)`, TO = `sum(TO)`, PTS = `sum(PTS)`, PF = `sum(PF)`, AST = `sum(AST)`, TOTAL_REB = `sum(TOTAL_REB)`, FTA = `sum(FTA)`, FTM = `sum(FTM)`, FG3M = `sum(FG3M)`, FG3A = `sum(FG3A)`, FGM = `sum(FGM)`, FGA = `sum(FGA)`)
+```
+
+
+
+# Outside Source and New Variable
+```{r}
+gamedata <- game_logs(seasons = 2023,
+                      league = "NBA",
+                      result_types = "team",
+                      season_types = "Regular Season",
+                      nest_data = F,
+                      assign_to_environment = TRUE,
+                      return_message = TRUE)
+
+gamedata_final = gamedata[,!names(gamedata) %in% c("urlTeamSeasonLogo",
+                                                   "slugSeason",
+                                                   "slugLeague",
+                                                   "yearSeason",
+                                                   "typeSeason")]
+head(gamedata_final)
+nrow(gamedata_final)
+ncol(gamedata_final)
+```
+
+
+
+
+
+
+# Merging Outside Source and New Variable
+```{r}
+# changing variable names
+gamedata_final2 = gamedata_final %>%
+  mutate(merging.id = paste(idGame,idTeam)) %>%
+  transmute(merging.id = merging.id, FGM = fgmTeam, FGA = fgaTeam, FG3M = fg3mTeam, FG3A = fg3aTeam, FTM = ftmTeam, FTA = ftaTeam, OREB = orebTeam, DREB = drebTeam, TOTAL_REB = trebTeam, AST = astTeam, BLK = blkTeam, PF = pfTeam, PTS = ptsTeam, TO = tovTeam, FG_PCT = pctFG2Team, FG3_PCT = pctFG3Team, DATE = dateGame, GAME_ID = idGame, TEAM_ID = idTeam, TEAM_NAME = nameTeam) 
+```
+
+
+
+# Total Game Day Data
+```{r}
+total_gamedata <- rbind(games.split, gamedata_final2)
+
+
+
+```
+
+
+# adding new variable
+```{r}
+total_gamedata$oPPFGteam = (total_gamedata$FGM * 2 + total_gamedata$FG3M * 3) / (total_gamedata$FGA)
+total_gamedata$oPPAteam = (total_gamedata$FTM * 1 + total_gamedata$FGM * 2 + total_gamedata$FG3M * 3) / (total_gamedata$FGA + total_gamedata$FTA)
+head(total_gamedata)
+```
+
+
+```{r}
+total_gamedata = total_gamedata %>% group_by(GAME_ID)
+
+total_gamedata = total_gamedata[!duplicated(total_gamedata$merging.id), ]
+
+total_gamedata2 = total_gamedata %>% 
+  summarize(TOTAL_PTS = sum(PTS), SPREAD = last(PTS) - first(PTS), TOTAL_OREB = sum(OREB))
+
+total_gamedata = merge(total_gamedata, total_gamedata2, by="GAME_ID")
+
+```
+
+
+
+
+
+________________________________________
+
+# Modelling
+
+
+## testing and training
+```{r}
+require(xgboost)
+set.seed(538)
+sample <- sample(c(TRUE, FALSE), nrow(total_gamedata), replace=TRUE, prob=c(0.7,0.3))
+train  <- total_gamedata[sample, ]
+test   <- total_gamedata[!sample, ]
+glimpse(train)
+```
+
+
+
+### Modelling attempt 2
+```{r}
+library(caTools)
+set.seed(538)
+sample_split <- sample.split(Y = total_gamedata$PTS, SplitRatio = 0.7)
+train_set <- subset(x = total_gamedata, sample_split == TRUE)
+test_set <- subset(x = total_gamedata, sample_split == FALSE)
+
+y_train <- as.integer(total_gamedata$PTS) - 1
+y_test <- as.integer(total_gamedata$PTS) - 1
+X_train <- total_gamedata %>% select(OREB,DREB,BLK,TO,PF,AST,FTA,FTM,FG3M,FG3A,FGM,FGA,FG_PCT,FG3_PCT,oPPFGteam,oPPAteam)
+X_test <- total_gamedata %>% select(OREB,DREB,BLK,TO,PF,AST,FTA,FTM,FG3M,FG3A,FGM,FGA,FG_PCT,FG3_PCT,oPPFGteam,oPPAteam)
+
+
+xgb_train <- xgb.DMatrix(data = as.matrix(X_train), label = y_train)
+xgb_test <- xgb.DMatrix(data = as.matrix(X_test), label = y_test)
+#params <- list(
+ #       booster = "gbtree",
+ #       objective = "multi:softprob",
+  #      eta=0.3,
+  #      gamma=0,
+   #     max_depth=6,
+    #    min_child_weight=1,
+     #   subsample=1,
+      #  colsample_bytree=1
+#)
+
+
+#xgbcv <- xgb.cv(params = params
+ #               ,data = xgb_train
+  #              ,nrounds = 100
+   #             ,nfold = 5
+    #            ,showsd = T
+    #            ,stratified = T
+    ##            ,print.every.n = 10
+     #           ,early.stop.round = 20
+      #          ,maximize = F
+#)
+  
+```
+
+```{r}
+watchlist = list(train=xgb_train, test=xgb_test)
+xgb_model = xgb.train(data = xgb_train, max.depth = 3, watchlist=watchlist, nrounds = 70)
+xgb_model
+
+
+
+
+
+```
+
+
+```{r}
+library(caret)
+final = xgboost(data = xgb_train, max.depth = 3, nrounds = 56, verbose = 0)
+pred_y = predict(final, xgb_test)
+final
+
+caret::MAE(y_test, pred_y)
+```
+
+```{r}
+importance_matrix <- xgb.importance(
+  feature_names = colnames(xgb_train), 
+  model = xgb_model
+)
+importance_matrix
+```
+
+```{r}
+xgb.plot.importance(importance_matrix)
+```
+```{r}
+xgb_preds <- predict(xgb_model, as.matrix(X_test), reshape = TRUE)
+xgb_preds <- as.data.frame(xgb_preds)
+colnames(xgb_preds) <- levels(total_gamedata$PTS)
+
+
+xgb_preds$PredictedClass <- apply(xgb_preds, 1, function(y) colnames(xgb_preds)[which.max(y)])
+xgb_preds$ActualClass <- levels(total_gamedata$PTS)[y_test + 1]
+
+
+
+accuracy <- sum(xgb_preds$PredictedClass == xgb_preds$ActualClass) / nrow(xgb_preds)
+accuracy
+```
+
+```{r}
+pred <- predict(xgb_model, xgb_test)
+```
+
+
+_______
+# Linear Model
+```{r}
+
+
+gamedata_final3 = filter(total_gamedata, GAME_ID %in% (22200001:22201170))
+
+data23 = gamedata_final3 %>% 
+  group_by(TEAM_ID) %>%
+  summarize(OREB=mean(OREB),DREB=mean(DREB),BLK=mean(BLK),TO= mean(TO),PTS=mean(PTS),PF= mean(PF), AST=mean(AST), TOTAL_REB=mean(TOTAL_REB), FTA=mean(FTA), FTM=mean(FTM), FG3M=mean(FG3M), FG3A=mean(FG3A), FGM=mean(FGM), FGA=mean(FGA), FG_PCT=mean(FG_PCT), FG3_PCT=mean(FG3_PCT), oPPFGteam=mean(oPPFGteam), oPPAteam=mean(oPPAteam), TOTAL_PTS=mean(TOTAL_PTS))
+
+```
+
+
+```{r}
+
+linearmodel <- lm(PTS~OREB+DREB+BLK+TO+PF+AST+TOTAL_REB+FTA+FTM+FG3M+FG3A+FGM+FGA+FG_PCT+FG3_PCT+oPPFGteam+oPPAteam, data=total_gamedata)
+summary(linearmodel)
+
+predictions_PTS_linear = predict(linearmodel,data23)
+predictions_PTS_linear
+```
+```{r}
+xgb_preds2 <- predict(xgb_model, as.matrix(X_test), reshape = TRUE)
+xgb_preds2 <- as.data.frame(xgb_preds)
+xgb_preds2
+```
+
+
+
+# Linear Training
+```{r}
+mod2 <- lm(PTS~oPPAteam+OREB+DREB+BLK+PF+AST+FTA+FG3A+FG_PCT+FG3_PCT+oPPFGteam+oPPAteam, data=total_gamedata)
+#mod3 <- glm(PTS~ data=total_gamedata, family="poisson")
+summary(mod3)
+mae(total_gamedata$PTS, predict(linearmodel))
+mae(total_gamedata$PTS, predict(mod2))
+mae(total_gamedata$PTS, predict(mod3))
+
+```
+
+```{r}
+predict(linearmodel,data23)
+predict(mod3,data23)
+predict(mod2,data23)
+```
+
+```{r}
+require(xgboost)
+sample <- sample(c(TRUE, FALSE), nrow(total_gamedata), replace=TRUE, prob=c(0.7,0.3))
+train  <- total_gamedata[sample, ]
+test   <- total_gamedata[!sample, ]
+#sparse_matrix <- sparse.model.matrix(response ~ .-1, data = train)
+#xgtrain <- xgb.DMatrix(data = as.matrix(train[,-5]), label = train$OREB)
+train2 <- select(train, -c(DATE, TEAM_NAME, merging.id))
+dtrain = xgb.DMatrix(as.matrix(train2), label=as.matrix(train2$PTS))
+```
+
+```{r}
+y_train <- train2$PTS
+y_test <- test$PTS
+lm_train <- select(train2, -c(PTS, FGM, FG3M, FTM))
+lm_test <- select(test, -c(PTS, FGM, FG3M, FTM))
+model = lm(y_train~DREB+BLK+TO+PF+AST+FTA+OREB+FGA+FG3_PCT+oPPAteam, data=lm_train)
+summary(model)
+
+```
+
+```{r}
+
+lm_total_predict_train = predict(model, lm_train) ##make predictions on data
+lm_total_predict_test = predict(model, lm_test)
+Metrics::mae(lm_total_predict_train, y_train) #evaluate your predictions based on MAE
+Metrics::mae(lm_total_predict_test, y_test)
+```
+
+#Stepwise Regression
+```{r}
+train3 = select(train2, -c(GAME_ID, TOTAL_REB, DREB, TEAM_ID, FGM, FTM, FG3M, TOTAL_POINTS))
+
+full_model = lm(PTS~PF+TO+AST+FTA+FG3A+FGA+FG3_PCT+oPPAteam+FG3A*FGA, data = train3)
+# Stepwise regression model
+step_model = MASS::stepAIC(full_model, direction = "both",trace = F)
+summary(step_model)
+```
+
+```{r}
+
+lm_total_predict_train = predict(step_model, lm_train) ##make predictions on data
+lm_total_predict_test = predict(step_model, lm_test)
+Metrics::mae(lm_total_predict_train, y_train) #evaluate your predictions based on MAE
+Metrics::mae(lm_total_predict_test, y_test)
+```
+# plot the best fit model
+
+
+
+
+#RandomForest
+```{r}
+library(randomForest)
+
+set.seed(1)
+
+forest_model = randomForest(formula=PTS~., data=train3, metric='mae',ntree=4, importance=T)
+importance(forest_model)[order(-importance(forest_model)[, 1]),]
+varImpPlot(forest_model)
+```
+
+```{r}
+
+rf_predict_train = predict(forest_model, train)
+rf_predict_test = predict(forest_model, test)
+
+Metrics::mae(rf_predict_train, train$PTS)
+Metrics::mae(rf_predict_test, test$PTS)
+
+```
+#Polynomial
+```{r}
+
+model2 = lm(PTS~poly(FGA,3)+poly(oPPAteam,2)+poly(oPPFGteam,2)+AST+TO+FG_PCT, data=train3)
+summary(model2)
+rf_predict_train = predict(model2, train)
+rf_predict_test = predict(model2, test)
+
+Metrics::mae(rf_predict_train, train$PTS)
+Metrics::mae(rf_predict_test, test$PTS)
+```
+# using data23 to predict with our model
+```{r}
+predict(step_model,data23)
+TOTAL_PTS_PREDICTIONS$predict = predict(step_model, newdata=data23)
+
+```
+
+
+```{r}
+data23
+```
+
+
+```{r}
+
+df_pts <- data.frame(first_column=predict(step_model, newdata=data23), second_column=
+  c("Atlanta Hawks","Boston", "Pelicans","Bulls", "Mavericks", "Nuggets", "Rockets","Clippers","Lakers", "Heat", "Bucks", "Timberwolves","Nets","Knicks", "Magic", "Pacers", "76ers", "Suns", "Blazers", "Kings", "Spurs","Thunder", "Raptors", "Jazz", "Grizzlies","Wiz","Pistons","Hornets","Cavs", "Warriors"))
+```
+
+
+
+
+
+
+
+```
+
+
